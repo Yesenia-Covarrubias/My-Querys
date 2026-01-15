@@ -1,4 +1,4 @@
-SELECT 
+WITH clientes AS (SELECT 
 rp.id,
 rp.trade_name,
 rp."name",
@@ -7,8 +7,9 @@ rp.segment,
 rp.phone,
 rp.street,
 rp.email,
+rp2."name" AS vendedor,
 dd."name" AS Division,
-rp2."name" AS vendedor
+rp.parent_id
 FROM 
 	res_partner rp
 LEFT JOIN
@@ -18,12 +19,28 @@ LEFT JOIN
 LEFT JOIN 
 	res_partner rp2 ON rp2.id = ru.partner_id 
 LEFT JOIN 
-	division_division dd ON dd.id = rp.division_id 
+	division_division_res_partner_rel ddrpr ON ddrpr.res_partner_id = rp.id
+LEFT JOIN 
+	division_division dd ON dd.id = ddrpr.division_division_id
 WHERE
-	rp.active IS TRUE
-AND 
-	ru.active IS TRUE
-AND 
-	rp.customer IS TRUE
-AND 
-	rp.trade_name  = 'CLIMAS DE LA FRONTERA, S.C.'
+	rp.active IS TRUE 
+AND ru.active IS TRUE
+AND rp.customer IS TRUE
+AND rp."name" IS NOT NULL
+AND rp.parent_id IS NULL),
+--
+conteo AS  (SELECT 
+clientes."name", 
+clientes.id, 
+COUNT(*) AS Conteo 
+FROM clientes 
+GROUP BY clientes.id, clientes."name" 
+HAVING count(*)>1 
+ORDER BY clientes.id ASC)
+--
+SELECT
+cl."name",
+cl.id,
+cl.vendedor
+FROM conteo con 
+LEFT JOIN clientes cl ON cl.id = con.id
