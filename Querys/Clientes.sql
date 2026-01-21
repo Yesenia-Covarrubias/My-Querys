@@ -8,7 +8,7 @@ rp.phone,
 rp.street,
 rp.email,
 rp2."name" AS vendedor,
-dd."name" AS Division,
+string_agg(dd."name", ', ') AS Division,
 rp.parent_id
 FROM 
 	res_partner rp
@@ -27,7 +27,8 @@ WHERE
 AND ru.active IS TRUE
 AND rp.customer IS TRUE
 AND rp."name" IS NOT NULL
-AND rp.parent_id IS NULL),
+AND rp.parent_id IS NULL
+GROUP BY rp.id, rp2.id),
 --
 conteo AS  (SELECT 
 clientes."name", 
@@ -35,12 +36,15 @@ clientes.id,
 COUNT(*) AS Conteo 
 FROM clientes 
 GROUP BY clientes.id, clientes."name" 
-HAVING count(*)>1 
+HAVING count(*)>1
 ORDER BY clientes.id ASC)
 --
 SELECT
 cl."name",
 cl.id,
-cl.vendedor
+con.conteo,
+cl.vendedor,
+cl.segment,
+cl.division
 FROM conteo con 
 LEFT JOIN clientes cl ON cl.id = con.id
