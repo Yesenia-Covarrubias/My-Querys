@@ -1,0 +1,72 @@
+WITH 
+inv AS (
+	SELECT 
+		sq.id,
+		sq.quantity AS cantidad,
+		sq.warehouse_id,
+		sq.location_id,
+		sq.product_id,
+		sq.lot_id
+FROM stock_quant sq
+	JOIN stock_location sl ON sl.id= sq.location_id
+	WHERE sl."comment"= 'INVESTIGACION'
+	AND sq.quantity >= 0.01
+	),
+universo_productos AS (
+	SELECT DISTINCT product_id
+	FROM inv
+	),
+uc AS (
+ SELECT DISTINCT ON (pph.product_id)
+ 		pph.product_id,
+ 		pph.cost AS costo_unitario,
+ 		pph.datetime
+    FROM product_price_history pph
+	JOIN universo_productos up ON up.product_id = pph.product_id
+	ORDER BY pph.product_id, pph.datetime DESC
+	)
+	SELECT DISTINCT ON (inv.id)	
+	now () AS fecha_consulta,
+	sl."comment" AS clasificado,
+	sw.name AS almacen,
+	sl.name AS ubicacion,
+	pp.default_code AS producto,
+	inv.id,
+	inv.cantidad AS on_hand,
+	COALESCE (uc.costo_unitario,0)AS costo_unitario,
+	ROUND ((inv.cantidad * COALESCE(uc.costo_unitario,0))::NUMERIC, 2) AS costo_total,
+	movimiento.reference AS referencia,
+	CASE 
+		WHEN movimiento.picking_id IS NULL THEN 'INVENTARIO INICIAL'
+		ELSE concat( 'https://odoo.grupoabsa.com/web#id=', movimiento.picking_id, '&model=stock.picking'
+		)
+	END AS link_pick,
+	COALESCE (sp.origin, 'INVENTARIO INICIAL') AS origen,
+	spl.name AS lote,
+	(movimiento.move_date - interval '6 hours') AS fecha_hecho,
+  	(movimiento.move_date - interval '6 hours')::date AS dia_hecho,
+  	COALESCE (rp.name, 'INVENTARIO INICIAL') AS responsable,
+  	sp.note AS nota_entrada
+ FROM inv
+  	JOIN stock_warehouse sw ON inv.warehouse_id = sw.id
+  	JOIN stock_location sl ON inv.location_id = sl.id
+  	JOIN product_product pp ON inv.product_id = pp.id
+  	LEFT JOIN stock_production_lot spl ON inv.lot_id = spl.id 
+  	LEFT JOIN LATERAL (
+    SELECT
+        sm.picking_id,
+        sm.date AS move_date,
+        sml.reference
+  	FROM stock_move_line sml
+ 	 	JOIN stock_move sm ON sm.id = sml.move_id
+	 	WHERE sml.lot_id = inv.lot_id
+   	 	AND sml.location_dest_id = inv.location_id
+  	 	AND sm.state = 'done'
+ 	 ORDER BY sm.date DESC NULLS LAST, sm.id DESC
+ 	 	LIMIT 1
+	) movimiento ON true
+  	LEFT JOIN stock_picking sp ON sp.id = movimiento.picking_id
+  	LEFT JOIN res_users ru ON sp.user_id = ru.id
+  	LEFT JOIN res_partner rp ON ru.partner_id = rp.id
+  	LEFT JOIN uc ON uc.product_id = inv.product_id
+  	ORDER BY inv.id, movimiento.move_date DESC NULLS LAST
