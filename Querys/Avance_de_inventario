@@ -1,0 +1,218 @@
+-- PBI ALMACEN KPIS / AVANVE DE INVENTARIO 
+/* Reporte de avance de inventario, toma una clasificación A (Producto de alta rotación) B (Producto de mayor monto) y
+C (Producto de bajo movimiento y baja rotación) para determinar periodo aceptable sin conteo por cada ubicación segun su 
+clasificación. El cumplimiento es el % de ubicaciones con fecha de ultimo conteo en un rango de periodo aceptable /*
+--- Plan de Inventario Cíclico - Avance inventario 2026 01 16
+
+
+SELECT 
+	inv.almacen, 
+	inv.tipo,
+	inv.id_ubicacion,
+	concat('https://www.grupoabsa.com/web#id=',inv.id_ubicacion,'&model=stock.location&view_type=form&menu_id=') link_ubi,
+	inv.ubicacion,
+	inv.responsable,
+	inv.max_sil_id,
+	inv.id_inventario,
+	inv.inventario, 
+	concat('https://odoo.grupoabsa.com/web?debug=1#id=',inv.id_inventario,'&action=284&model=stock.inventory&view_type=form&menu_id=193') link_inventario,
+	inv.estado_inventario,
+	inv.f_ultimo_inventario::date dia_ultimo_inventario,
+	inv.f_ultimo_inventario,
+	now() ahora, 
+	inv.periodo_sin_revision,
+	inv.dias_sin_revision,
+	inv.clasificacion,
+	inv.costo_ubicacion,
+	CASE  
+		WHEN  inv.clasificacion = 'A' AND  inv.periodo_sin_revision <= interval '120 days' AND  inv.estado_inventario = 'done' THEN  'OK' 
+		WHEN  inv.clasificacion = 'B' AND  inv.periodo_sin_revision <= interval '180 days' AND  inv.estado_inventario = 'done' THEN  'OK'
+		WHEN  inv.clasificacion = 'C' AND  inv.periodo_sin_revision <= interval '360 days' AND  inv.estado_inventario = 'done' THEN  'OK'
+		WHEN  inv.clasificacion = 'M' AND  inv.periodo_sin_revision <= interval '60 days' AND  inv.estado_inventario = 'done' THEN  'OK'
+		WHEN  inv.estado_inventario = 'confirm' THEN  'PENDIENTE VALIDAR'
+		ELSE  'PENDIENTE REVISAR'
+	END  AS  estado
+FROM  (
+	WITH  clasificacion_costo_ubicacion AS  (
+		--clasificacion x costo 80/20
+		WITH  costo_ubicacion AS (
+--
+		-- PRECIO DEL MATERIAL 
+			WITH  product_avg AS (
+					SELECT DISTINCT ON (product_id) 
+					 	product_id,
+					 	round(product_price_history.cost,4) AS unit_cost, 
+					 	product_price_history.datetime
+				 	FROM product_price_history -- precio del material 
+				 	ORDER BY product_id, product_price_history.datetime DESC)
+--
+	
+ 		--	TOTAL DE LA CANTIDAD EN LA UBICACION X EL COSTO UNITARIO TRAIDO DEL WHIT PRODUCT_AVG
+				SELECT  
+					sw.name almacen, 
+					sl.id id_ubicacion,
+					sl.name ubicacion,
+					round(sum(sq.quantity::numeric * pa.unit_cost::numeric),2) costo_ubicacion
+				FROM  stock_quant sq -- cantidad por id de producto, loteny location 
+				INNER  JOIN  stock_location sl on sq.location_id = sl.id 
+				INNER  JOIN  stock_warehouse sw on sq.warehouse_id = sw.id
+				INNER  JOIN  product_product pp on sq.product_id = pp.id
+				INNER  JOIN  product_avg pa on pp.id = pa.product_id 
+				WHERE  sw.name = 'GUADALAJARA' and sl.name not in ('GDLSERVICIOS/LICENCIAS', 'GUADA VIRTUALES', 'GUADA RETORNOS', 'DESTRUCCION')
+				GROUP  BY  sw.name, sl.name, sl.id
+				ORDER  BY  costo_ubicacion DESC),
+	-- LLAMA LAS COLUMNAS DE LA TABLA CREADA DE COSTO UBICACION 
+			filas_costo AS  (
+				SELECT  
+				row_number() OVER  (ORDER  BY  cu.costo_ubicacion DESC ) AS  fila_numero,
+				cu.almacen,
+				cu.id_ubicacion,
+				cu.ubicacion,
+				cu.costo_ubicacion
+				FROM  costo_ubicacion cu),
+--
+	-- 
+			costo_acumulado AS (
+				SELECT  
+					fc.fila_numero,
+					fc.almacen,
+					fc.id_ubicacion,
+					fc.ubicacion,
+					fc.costo_ubicacion,
+				 	sum(fc.costo_ubicacion) OVER  (ORDER  BY  fc.fila_numero ASC ) AS  costo_acumulado,
+				 	sum(fc.costo_ubicacion) OVER  () AS  costo_total
+				FROM  filas_costo fc),
+--
+	-- DA EL PORCENTAJE DE LOS COSTSOS ANTERIORES 
+			porcentaje_acumulado AS  (
+			 	SELECT  
+			 		ca.fila_numero,
+			 		ca.almacen,
+			 		ca.id_ubicacion,
+			 		ca.ubicacion,
+			 		ca.costo_ubicacion,
+			 		ca.costo_acumulado,
+			 		ca.costo_total,
+			 		(ca.costo_acumulado::numeric / ca.costo_total::numeric) * 100 as porcentaje_acumulado
+			 	FROM  costo_acumulado ca)
+--
+			SELECT 
+			pa.fila_numero,
+			pa.almacen,
+			pa.id_ubicacion,
+			pa.ubicacion,
+			pa.costo_ubicacion, 
+			pa.costo_acumulado,
+			pa.costo_total, 
+			pa.porcentaje_acumulado,
+			'B' clasificacion
+		FROM  porcentaje_acumulado pa
+		WHERE  pa.porcentaje_acumulado <= '80'),-- TERMINAN LOS PRIMEROS CETES 
+	rotacion AS  (
+		WITH  clasificacion_por_rotacion as (
+-- CLASIFICACUION POR ROTACION DE MATERIAL A
+		SELECT 
+			sw."name" almacen, 
+			sl.id id_ubicacion,
+			sl."name" ubicacion,
+			pp.default_code producto,
+			sq.product_id product_id, 
+			sq.quantity cantidad,
+			(SELECT  swo.rotation 
+		FROM  stock_warehouse_orderpoint swo
+		WHERE  swo.product_id = sq.product_id AND  swo.warehouse_id = sq.warehouse_id 	
+		AND  active = TRUE  LIMIT  1) AS  rotacion
+		FROM  stock_quant sq
+		INNER  JOIN  stock_warehouse sw ON  sq.warehouse_id = sw.id 
+		INNER  JOIN  stock_location sl ON  sq.location_id = sl.id 
+		INNER  JOIN  product_product pp ON  sq.product_id = pp.id
+		WHERE  sw.name = 'GUADALAJARA' AND  sl.name NOT  LIKE  ('%DESTRUCCION%')) 
+		SELECT  DISTINCT  ON  (ubicacion)
+			cpr.almacen,
+			cpr.id_ubicacion,
+			cpr.ubicacion,
+			cpr.producto,
+			cpr.rotacion
+		FROM  clasificacion_por_rotacion cpr
+		WHERE  cpr.rotacion in ('A')
+		ORDER  BY  cpr.ubicacion, cpr.rotacion asc),
+	costo_x_ubicacion as (
+		WITH  product_avg as(
+			SELECT DISTINCT ON (product_id) 
+			 	product_id,
+			 	round(product_price_history.cost,4) AS unit_cost, product_price_history.datetime
+		 	FROM product_price_history -- precio del material por id 
+		 	ORDER BY product_id, product_price_history.datetime DESC )
+		SELECT   
+			sw.name almacen, 
+			sl.id id_ubicacion,
+			sl.name ubicacion,
+			round(sum(sq.quantity::numeric * pa.unit_cost::numeric),2) costo_ubicacion
+		FROM  stock_quant sq 
+		INNER  JOIN  stock_location sl ON  sq.location_id = sl.id 
+		INNER  JOIN  stock_warehouse sw ON  sq.warehouse_id = sw.id
+		INNER  JOIN  product_product pp ON  sq.product_id = pp.id
+		inner join product_avg pa on pp.id = pa.product_id 
+		--where sw.name = 'GUADALAJARA' and sl.name not in ('GDLSERVICIOS/LICENCIAS', 'GUADA VIRTUALES', 'GUADA RETORNOS', 'DESTRUCCION')
+		GROUP  BY  sw.name, sl.name, sl.id
+		ORDER  BY  costo_ubicacion DESC )
+	SELECT  
+		sw."name" almacen,
+		CASE  
+			WHEN  sl.COMMENT  = '' THEN  'VIRTUALES 115' ELSE  sl.COMMENT  END  AS  tipo,
+		sl.id id_ubicacion,
+		sl."name" ubicacion,
+		inv.responsable,
+		inv.id_inventario,
+		inv.max_sil_id, 
+		inv.inventario,
+		inv.estado_inventario,
+		CASE  
+			WHEN  sw.name = 'GUADALAJARA' THEN  coalesce(rot.rotacion, ccu.clasificacion, 'C')
+			WHEN  sw.name IN  ('CONSIGNA CONCENTRADORA', 'CONSIGNA CANANEA', 'CONSIGNA FUNDICION') THEN  'M'
+			else 'A'
+		END  AS  clasificacion, 
+		inv.f_ultimo_inventario,
+		inv.periodo_sin_revision,
+		inv.dias_sin_revision,
+		cxu.costo_ubicacion
+	FROM  stock_location sl -- ubicacion del material 
+		INNER  JOIN  stock_quant sq ON  sl.id = sq.location_id AND  sq.warehouse_id IS  NOT  NULL  AND  sq.quantity > 0.001
+		LEFT  JOIN  stock_warehouse sw ON  sq.warehouse_id = sw.id 
+		LEFT  JOIN  (	
+		-- RELACION CON ÚLTIMO INVENTARIO CÍCLICO 
+			SELECT  DISTINCT  ON  (sl.id)
+				sw."name" almacen,
+				sl.id id_ubicacion,
+				sl."name" ubicacion,
+				si.id id_inventario,
+				si.name inventario,
+				si.state estado_inventario,
+				rp.name responsable,
+				max(sil.id) max_sil_id,
+				--count(distinct(si."name")) ultimo_inventario,
+				max(greatest(si.date - interval '6 hours')) f_ultimo_inventario,
+				now() - max(greatest(si.date - interval '6 hours')) periodo_sin_revision,
+				now()::date - (max(greatest(si.date - interval '6 hours')))::date dias_sin_revision
+		FROM  stock_location sl
+				INNER  JOIN  stock_inventory_line sil ON  sl.id = sil.location_id 	
+				LEFT JOIN  stock_quant sq ON  sl.id = sq.location_id 
+				LEFT  JOIN  stock_warehouse sw ON  sq.warehouse_id = sw.id 
+				LEFT  JOIN  stock_inventory si ON  sil.inventory_id = si.id
+				LEFT  JOIN  res_users ru ON  sil.write_uid = ru.id
+				LEFT  JOIN  res_partner rp ON  ru.partner_id = rp.id
+			--where si.name  like '%Inventario Ciclico%'
+				GROUP  BY  sw."name", sl."name", sl.id, si.name, si.date, si.state, si.id, rp.name
+				ORDER  by  sl.id, si.date DESC) inv ON  sl.id = inv.id_ubicacion
+				LEFT JOIN  rotacion rot ON  sl.id = rot.id_ubicacion 
+				LEFT  JOIN  clasificacion_costo_ubicacion ccu ON  sl.id = ccu.id_ubicacion
+				INNER JOIN  costo_x_ubicacion cxu on sl.id = cxu.id_ubicacion 
+				WHERE  sl."usage" = 'internal' 
+				AND  sl.comment != '' 
+				AND sl.name NOT LIKE ('%DEMOS RESG%') 
+				AND  sl.comment NOT  IN  ('RETORNOS', 'BV VIRTUALES','INVESTIGACION', 'MATERIAL SALIENTE') 
+				AND  sw.name NOT  IN  ('CONSIGNA BAFAR', 'CONSIGNA FORJAS', 'CONSIGNA MAHLE', 'CONSIGNA MAXION WHEELS', 'CONSIGNA PINOS ALTOS', 'CONSIGNA MEX FORD', 'EDOMEX', 'EL_PASO', 'LAREDO')
+				GROUP  BY  sw."name", sl.comment, sl.id, sl."name",inv.f_ultimo_inventario,inv.periodo_sin_revision, inv.inventario, inv.max_sil_id, 
+	 			inv.estado_inventario, rot.rotacion, ccu.clasificacion, cxu.costo_ubicacion, inv.id_inventario, inv.dias_sin_revision, inv.responsable)inv 
+--where inv.id_ubicacion = '15149'
+				ORDER  BY  inv.f_ultimo_inventario DESC 
