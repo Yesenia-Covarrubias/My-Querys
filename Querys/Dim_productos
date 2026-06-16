@@ -1,0 +1,56 @@
+WITH  product_avg AS (
+    	SELECT
+    	DISTINCT ON (pph.product_id) product_id, 
+    	pph.product_id AS product_hid,
+    	pph.COST,
+    	pph.datetime 
+    	FROM product_price_history pph 
+    	ORDER BY pph.product_id, pph.datetime DESC
+    	),
+    product_replacement AS (
+    	SELECT
+    	DISTINCT ON (pp.id) pp.id AS product_id,
+    	ps.price,
+    	ps SEQUENCE,
+    	CASE
+    		WHEN ps.purchase_factor > 0 THEN (ps.price - (ps.price * ps.purchase_factor / 100))
+    		ELSE ps.price
+    	END AS cost_replacement,
+    	ps.currency_id,
+    	ps.date_start,
+    	ps.date_end
+    	FROM product_supplierinfo ps 
+    	INNER JOIN product_template pt ON pt.id = ps.product_tmpl_id
+    	INNER JOIN product_product pp ON pp.product_tmpl_id = pt.id
+    	WHERE ps.date_start <= now()::date AT time ZONE 'America/Mexico_City'
+    	OR date_start IS NULL 
+    	ORDER BY pp.id ASC, 
+    	ps.date_end DESC, 
+    	ps.SEQUENCE ASC 
+    	),
+    tipo_cambio AS (
+    	SELECT
+    	rcr.rate,
+    	rcr.name::date AS fecha
+    	FROM res_currency_rate rcr
+    	WHERE rcr.currency_id = 2
+    	ORDER BY name DESC 
+    	LIMIT 1)
+SELECT
+    pp.default_code AS producto,
+    pp.id AS product_id,
+   	pa.COST,
+   	pr.price,
+    pr.cost_replacement,
+    CASE
+    	WHEN pr.currency_id = 33 THEN pr.cost_replacement * (SELECT rate FROM tipo_cambio) 
+    	ELSE pr.cost_replacement
+    END AS unit_replacement_usd,
+    pr.currency_id
+ FROM product_product pp
+ INNER JOIN product_avg pa ON pa.product_hid = pp.id
+ FULL JOIN product_replacement pr ON pr.product_id = pp.id
+ WHERE pp.active
+ --AND pp.id =525278
+ 
+ 
